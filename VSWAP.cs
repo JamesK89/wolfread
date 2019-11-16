@@ -21,6 +21,8 @@ namespace wolfread
 			Size textureSize,
 			Size spriteSize)
 		{
+			TextureSize = textureSize;
+			SpriteSize = spriteSize;
 			ReadPageFile(fileName);
 		}
 
