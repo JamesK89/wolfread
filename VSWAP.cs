@@ -69,9 +69,14 @@ namespace wolfread
 			private set;
 		}
 
-		public Bitmap GetTexture(Palette pal, uint index)
+		public byte[] GetTextureData(uint index)
 		{
-			byte[] data = Pages[Textures + index];
+			return Pages[Textures + index];
+		}
+
+		public Bitmap GetTextureBitmap(Palette pal, uint index)
+		{
+			byte[] data = GetTextureData(index);
 
 			Bitmap result = new Bitmap(
 				TextureSize.Width, TextureSize.Height, PixelFormat.Format8bppIndexed);
@@ -109,9 +114,109 @@ namespace wolfread
 			return result;
 		}
 
-		public Bitmap GetSprite(Palette pal, uint index)
+		public byte[] GetTextureRGB(Palette pal, uint index)
 		{
-			byte[] data = Pages[Sprites + index];
+			byte[] srcData = GetTextureData(index);
+			byte[] dstData = new byte[TextureSize.Width * TextureSize.Height * 3];
+
+			int stride = TextureSize.Width * 3;
+
+			for (int y = 0; y < TextureSize.Height; y++)
+			{
+				for (int x = 0; x < TextureSize.Width; x++)
+				{
+					Color clr = pal[srcData[(x * TextureSize.Height) + y]];
+
+					dstData[(y * stride) + (x * 3) + 0] = clr.R;
+					dstData[(y * stride) + (x * 3) + 1] = clr.G;
+					dstData[(y * stride) + (x * 3) + 2] = clr.B;
+				}
+			}
+
+			return dstData;
+		}
+
+		public byte[] GetSpriteData(uint index)
+		{
+			byte[] srcData = Pages[Sprites + index];
+			byte[] dstData = new byte[SpriteSize.Width * SpriteSize.Height];
+
+			for (int i = 0; i < dstData.Length; i++)
+			{
+				dstData[i] = 0xFF;
+			}
+
+			short lftColumn = BitConverter.ToInt16(srcData, sizeof(short) * 0);
+			short rgtColumm = BitConverter.ToInt16(srcData, sizeof(short) * 1);
+
+			short[] instructions = new short[3];
+			short[] offsets = new short[SpriteSize.Width];
+
+			int offsetIndex = 0;
+			int offsetsLength = (sizeof(short) * offsets.Length);
+
+			while ((offsetsLength + (sizeof(short) * 2)) > srcData.Length)
+			{
+				offsetsLength -= sizeof(short);
+			}
+
+			Buffer.BlockCopy(srcData, sizeof(short) * 2, offsets, 0, offsetsLength);
+
+			int pixel = (rgtColumm - lftColumn + 3) * sizeof(short);
+
+			for (int x = lftColumn; x < rgtColumm; x++)
+			{
+				int idx = 0;
+
+				do
+				{
+					Buffer.BlockCopy(
+						srcData, offsets[offsetIndex] + (idx * sizeof(short)),
+						instructions, 0, sizeof(short) * instructions.Length);
+
+					if (instructions[0] != 0)
+					{
+						for (int y = (instructions[2] >> 1); y < (instructions[0] >> 1); y++)
+						{
+							dstData[y + (x * SpriteSize.Height)] = srcData[pixel++];
+						}
+
+						idx += 3;
+					}
+				}
+				while (instructions[0] != 0);
+
+				offsetIndex++;
+			}
+
+			return dstData;
+		}
+
+		public byte[] GetSpriteRGB(Palette pal, uint index)
+		{
+			byte[] srcData = GetSpriteData(index);
+			byte[] dstData = new byte[SpriteSize.Width * SpriteSize.Height * 3];
+
+			int stride = SpriteSize.Width * 3;
+
+			for (int y = 0; y < SpriteSize.Height; y++)
+			{
+				for (int x = 0; x < SpriteSize.Width; x++)
+				{
+					Color clr = pal[srcData[(x * SpriteSize.Height) + y]];
+
+					dstData[(y * stride) + (x * 3) + 0] = clr.R;
+					dstData[(y * stride) + (x * 3) + 1] = clr.G;
+					dstData[(y * stride) + (x * 3) + 2] = clr.B;
+				}
+			}
+
+			return dstData;
+		}
+
+		public Bitmap GetSpriteBitmap(Palette pal, uint index)
+		{
+			byte[] data = GetSpriteData(index);
 
 			Bitmap result = new Bitmap(
 				SpriteSize.Width, SpriteSize.Height, PixelFormat.Format8bppIndexed);
@@ -131,52 +236,13 @@ namespace wolfread
 
 			byte[] newBitmapData = new byte[bitmapData.Stride * bitmapData.Height];
 
-			for (int i = 0; i < newBitmapData.Length; i++)
+			for (int y = 0; y < result.Height; y++)
 			{
-				newBitmapData[i] = 0xFF;
-			}
-
-			short lftColumn = BitConverter.ToInt16(data, sizeof(short) * 0);
-			short rgtColumm = BitConverter.ToInt16(data, sizeof(short) * 1);
-
-			short[] instructions = new short[3];
-
-			short[] offsets = new short[SpriteSize.Width];
-			int offsetIndex = 0;
-			int offsetsLength = (sizeof(short) * offsets.Length);
-
-			while ((offsetsLength + (sizeof(short) * 2)) > data.Length)
-			{
-				offsetsLength -= sizeof(short);
-			}
-
-			Buffer.BlockCopy(data, sizeof(short) * 2, offsets, 0, offsetsLength);
-
-			int pixel = (rgtColumm - lftColumn + 3) * sizeof(short);
-
-			for (int x = lftColumn; x < rgtColumm; x++)
-			{
-				int idx = 0;
-
-				do
+				for (int x = 0; x < result.Width; x++)
 				{
-					Buffer.BlockCopy(
-						data, offsets[offsetIndex] + (idx * sizeof(short)),
-						instructions, 0, sizeof(short) * instructions.Length);
-
-					if (instructions[0] != 0)
-					{
-						for (int y = (instructions[2] >> 1); y < (instructions[0] >> 1); y++)
-						{
-							newBitmapData[x + (y * SpriteSize.Height)] = data[pixel++];
-						}
-
-						idx += 3;
-					}
+					newBitmapData[(y * bitmapData.Stride) + x] =
+						data[(x * SpriteSize.Height) + y];
 				}
-				while (instructions[0] != 0);
-
-				offsetIndex++;
 			}
 
 			Marshal.Copy(newBitmapData, 0, bitmapData.Scan0, newBitmapData.Length);
@@ -186,6 +252,13 @@ namespace wolfread
 			result.Palette = cp;
 
 			return result;
+		}
+
+		public byte[] GetSoundData(uint index)
+		{
+			byte[] data = Pages[Sounds + index];
+
+			return data;
 		}
 
 		private void ReadPageFile(string fileName)
