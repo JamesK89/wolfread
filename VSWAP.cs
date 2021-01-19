@@ -3,6 +3,7 @@ using System.IO;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
 
 namespace wolfread
 {
@@ -14,6 +15,13 @@ namespace wolfread
 			public ushort ChunksInFile;
 			public ushort SpriteIndex;
 			public ushort SoundIndex;
+		}
+
+		[StructLayout(LayoutKind.Sequential)]
+		public struct DigiInfo
+		{
+			public int StartPage;
+			public int Length;
 		}
 
 		public VSWAP(
@@ -45,19 +53,51 @@ namespace wolfread
 			private set;
 		}
 
-		public uint Textures
+		public uint TextureStart
+		{
+			get
+			{
+				return 0;
+			}
+		}
+
+		public uint TextureCount
+		{
+			get
+			{
+				return SpriteStart;
+			}
+		}
+
+		public uint SpriteStart
 		{
 			get;
 			private set;
 		}
 
-		public uint Sprites
+		public uint SpriteCount
+		{
+			get
+			{
+				return (SoundStart - SpriteStart);
+			}
+		}
+
+		public uint SoundStart
 		{
 			get;
 			private set;
 		}
 
-		public uint Sounds
+		public uint SoundCount
+		{
+			get
+			{
+				return (uint)SoundInfo.Length;
+			}
+		}
+
+		public DigiInfo[] SoundInfo
 		{
 			get;
 			private set;
@@ -71,7 +111,7 @@ namespace wolfread
 
 		public byte[] GetTextureData(uint index)
 		{
-			return Pages[Textures + index];
+			return Pages[TextureStart + index];
 		}
 
 		public Bitmap GetTextureBitmap(Palette pal, uint index)
@@ -138,7 +178,7 @@ namespace wolfread
 
 		public byte[] GetSpriteData(uint index)
 		{
-			byte[] srcData = Pages[Sprites + index];
+			byte[] srcData = Pages[SpriteStart + index];
 			byte[] dstData = new byte[SpriteSize.Width * SpriteSize.Height];
 
 			for (int i = 0; i < dstData.Length; i++)
@@ -256,7 +296,22 @@ namespace wolfread
 
 		public byte[] GetSoundData(uint index)
 		{
-			byte[] data = Pages[Sounds + index];
+			int length = (int)SoundInfo[index].Length;
+			byte[] data = new byte[length];
+
+			int page = SoundInfo[index].StartPage;
+
+			while (length > 0)
+			{
+				Buffer.BlockCopy(
+					Pages[page], 0,
+					data, (int)SoundInfo[index].Length - length,
+					Pages[page].Length);
+
+				length -= Pages[page].Length;
+
+				page++;
+			}
 
 			return data;
 		}
@@ -267,9 +322,9 @@ namespace wolfread
 					new FileStream(fileName,
 						FileMode.Open, FileAccess.Read, FileShare.Read))
 			{
-				int headerSize = 
+				int headerSize =
 					Marshal.SizeOf(typeof(PageHeader));
-				byte[] headerBuffer = 
+				byte[] headerBuffer =
 					new byte[headerSize];
 
 				PageHeader header = new PageHeader();
@@ -287,50 +342,127 @@ namespace wolfread
 					handle.Free();
 				}
 
-				Sprites = (uint)header.SpriteIndex;
-				Sounds = (uint)header.SoundIndex;
+				SpriteStart = (uint)header.SpriteIndex;
+				SoundStart = (uint)header.SoundIndex;
 
-				uint[] offsets = new uint[header.ChunksInFile + 1];
-				ushort[] lengths = new ushort[header.ChunksInFile + 1];
+				uint[] offsets = new uint[header.ChunksInFile];
+				ushort[] lengths = new ushort[header.ChunksInFile];
 
 				byte[] intBuffer = new byte[sizeof(uint)];
 				byte[] shtBuffer = new byte[sizeof(ushort)];
 
-				for (int i = 0; i < (offsets.Length - 1); i++)
+				for (int i = 0; i < offsets.Length; i++)
 				{
 					stream.Read(intBuffer, 0, intBuffer.Length);
 					offsets[i] = BitConverter.ToUInt32(intBuffer, 0);
 				}
 
-				for (int i = 0; i < (lengths.Length - 1); i++)
+				for (int i = 0; i < lengths.Length; i++)
 				{
 					stream.Read(shtBuffer, 0, shtBuffer.Length);
 					lengths[i] = BitConverter.ToUInt16(shtBuffer, 0);
 				}
 
-				offsets[offsets.Length - 1] = 0;
-				lengths[offsets.Length - 1] = 0;
+				ReadChunks(stream, header, offsets, lengths);
 
-				ReadChunks(stream, offsets, lengths);
+				ReadSoundInfo();
 			}
 		}
 
-		private void ReadChunks(Stream stream, uint[] offsets, ushort[] lengths)
+		private void ReadChunks(Stream stream, PageHeader header, uint[] offsets, ushort[] lengths)
 		{
-			Pages = new byte[offsets.Length][];
+			Pages = new byte[header.ChunksInFile][];
 
-			for (int i = 0; i < offsets.Length; i++)
+			for (int i = 0; i < header.ChunksInFile; i++)
 			{
-				uint offset = offsets[i];
-				uint length = lengths[i];
-
-				if (offset > 0 && length > 0)
+				if (offsets[i] > 0)
 				{
-					Pages[i] = new byte[length];
-					stream.Seek((long)offset, SeekOrigin.Begin);
-					stream.Read(Pages[i], 0, (int)length);
+					uint nextOffset = (i + 1) < header.ChunksInFile ?
+						offsets[i + 1] : 0;
+
+					if (nextOffset > 0)
+					{
+						Pages[i] = new byte[nextOffset - offsets[i]];
+					}
+					else
+					{
+						Pages[i] = new byte[lengths[i]];
+					}
+
+					if (Pages[i].Length > 0)
+					{
+						stream.Seek(offsets[i], SeekOrigin.Begin);
+						stream.Read(Pages[i], 0, Pages[i].Length);
+					}
+				}
+				else
+				{
+					Pages[i] = new byte[0];
 				}
 			}
+		}
+
+		private void ReadSoundInfo()
+		{
+			byte[] sndInfoPage = Pages[Pages.Length - 1];
+			int numSounds = sndInfoPage.Length / (sizeof(short) * 2);
+
+			List<DigiInfo> result = new List<DigiInfo>(numSounds);
+
+			for (int i = 0; i < numSounds; i++)
+			{
+				int startPage = BitConverter.ToInt16(sndInfoPage, (i * 2) * sizeof(short));
+
+				if (startPage >= (Pages.Length - 1))
+				{
+					numSounds = i;
+					break;
+				}
+				else
+				{
+					startPage += (int)SoundStart;
+				}
+
+				int sndLength = 0;
+				int endPage = 0;
+
+				if (i < (numSounds - 1))
+				{
+					endPage =
+					sndLength = BitConverter.ToInt16(
+						sndInfoPage, ((i * 2 + 2) * sizeof(short)));
+
+					if (endPage == 0 || (endPage + SoundStart) > (Pages.Length - 1))
+					{
+						endPage = (Pages.Length - 1);
+					}
+					else
+					{
+						endPage += (int)SoundStart;
+					}
+				}
+				else
+				{
+					endPage = (Pages.Length - 1);
+				}
+
+				int size = 0;
+
+				for (int p = startPage; p < endPage; p++)
+				{
+					size += Pages[p].Length;
+				}
+
+				DigiInfo info = new DigiInfo();
+
+				info.StartPage = startPage;
+				info.Length = size;
+
+				result.Add(info);
+
+			}
+
+			SoundInfo = result.ToArray();
 		}
 	}
 }
